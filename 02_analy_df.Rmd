@@ -5,3 +5,13 @@ date: "2026-03-13"
 output: pdf_document
 ---
 
+#load merged data
+#535 have outcome data
+#378 with exposure and outcome (128 from HOME and 250 from MIREC)
+```{r}
+merged_df<- read_csv("E:/BBK17/pj/basc_7y/data/basc_7y_df.csv") |>
+  filter(!if_any(41:44, is.na)) |>
+  filter(!if_any(2:30, is.na)) |>
+  mutate(across(where(is.character), as.factor))
+```
+
