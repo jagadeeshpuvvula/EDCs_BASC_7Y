@@ -158,6 +158,8 @@ write_csv(analy_df, "E:/BBK17/pj/basc_7y/data/basc_7y_df.csv")
 
 #visualize missing data (n=535 all with outcome data)
 ```{r}
+#analy_df<- merged_df
+
 # Define the desired order for y-axis labels
 custom_order <- rev(c(
   "Pb", "Hg", "DMA",
@@ -218,14 +220,14 @@ ggplot(missing_data_long_filtered, aes(x = Observations, y = reorder(Variables, 
     legend.key.width = unit(0.8, "cm"),
     legend.key.height = unit(0.3, "cm")
   ) +
-  geom_vline(xintercept = 1933, color = "grey20", linetype = "solid", linewidth = 1.5) +
+  #geom_vline(xintercept = 1933, color = "grey20", linetype = "solid", linewidth = 1.5) +
   guides(fill = guide_legend(direction = "horizontal",  title.hjust = 0.5, title="")) +
   scale_y_discrete(labels = function(x) paste0(x, " (", round(missing_percentage$MissingPercentage[match(x, missing_percentage$Variables)], 1), "%)"))
 ```
 
 #save missing data
 ```{r}
-ggsave("E:/BBK17/pj/basc_7y/results/missing_pattern_full_data.tiff", 
+ggsave("E:/BBK17/pj/basc_7y/results/missing_pattern_full_outcome_data.tiff", 
        width = 8,height = 6,
        dpi=300)
 ```

@@ -1,0 +1,7 @@
+---
+title: "04_qgc_mi"
+author: "Jagadeesh Puvvula"
+date: "2026-03-23"
+output: pdf_document
+---
+

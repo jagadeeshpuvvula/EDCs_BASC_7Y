@@ -1,0 +1,200 @@
+---
+title: "9999_dev"
+author: "Jagadeesh Puvvula"
+date: "2026-03-23"
+output: html_document
+---
+
+#multiple imputation linear regression
+```{r}
+lm_exp_mixtures <- function(dependent_vars, independent_vars, covariates, data,
+                            include_sex = TRUE, include_cohort = TRUE,
+                            log2_vars = NULL) {
+  
+  if (!inherits(data, "mids")) stop("`data` must be a mids object from the mice package.")
+  require(mice)
+  
+  m <- data$m
+  imp_datasets <- mice::complete(data, action = "all")
+  
+  # ── Log2 transform specified variables in each imputed dataset ───────────────
+  if (!is.null(log2_vars)) {
+    imp_datasets <- lapply(imp_datasets, function(d) {
+      missing_vars <- setdiff(log2_vars, names(d))
+      if (length(missing_vars) > 0) {
+        warning(paste("log2_vars not found in data:", paste(missing_vars, collapse = ", ")))
+      }
+      vars_present <- intersect(log2_vars, names(d))
+      for (v in vars_present) {
+        if (any(d[[v]] <= 0, na.rm = TRUE)) {
+          warning(paste0("Variable '", v, "' contains non-positive values; log2 transform may produce NaN/Inf."))
+        }
+        d[[v]] <- log2(d[[v]])
+      }
+      d
+    })
+  }
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  dependent_list    <- list()
+  independent_list  <- list()
+  sex_level_list    <- list()
+  cohort_level_list <- list()
+  coef_list         <- list()
+  p_value_list      <- list()
+  ci_list           <- list()
+  
+  has_zero_variance <- function(df) {
+    sapply(df, function(x) is.numeric(x) && (var(x, na.rm = TRUE) == 0))
+  }
+  
+  # ── Rubin's rules pooling helper ─────────────────────────────────────────────
+  pool_rubin <- function(fits, param) {
+    
+    betas <- tryCatch(
+      sapply(fits, function(f) coef(f)[param]),
+      error = function(e) return(NULL)
+    )
+    if (is.null(betas) || any(is.na(betas))) return(list(beta = NA, se = NA, p = NA,
+                                                          ci_low = NA, ci_high = NA))
+    
+    within_vars <- sapply(fits, function(f) vcov(f)[param, param])
+    
+    Q_bar <- mean(betas)
+    W     <- mean(within_vars)
+    B     <- var(betas)
+    T_var <- W + (1 + 1 / m) * B
+    se    <- sqrt(T_var)
+    
+    r    <- (1 + 1 / m) * B / W
+    v_df <- (m - 1) * (1 + 1 / r)^2
+    
+    t_stat  <- Q_bar / se
+    p_val   <- 2 * pt(abs(t_stat), df = v_df, lower.tail = FALSE)
+    ci_low  <- Q_bar - qt(0.975, df = v_df) * se
+    ci_high <- Q_bar + qt(0.975, df = v_df) * se
+    
+    list(beta = Q_bar, se = se, p = p_val, ci_low = ci_low, ci_high = ci_high)
+  }
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  for (sex_level in c("all", "Female", "Male")) {
+    
+    if (include_sex) {
+      if (sex_level == "all") {
+        sex_datasets <- imp_datasets
+        sex_formula  <- "+ sex"
+      } else {
+        sex_datasets <- lapply(imp_datasets, function(d) droplevels(subset(d, sex == sex_level)))
+        sex_formula  <- ""
+      }
+    } else {
+      sex_datasets <- imp_datasets
+      sex_formula  <- ""
+    }
+    
+    for (cohort_level in c("all", "HOME", "MIREC")) {
+      
+      if (include_cohort) {
+        if (cohort_level == "all") {
+          cohort_datasets <- sex_datasets
+          cohort_formula  <- "+ cohort + center"
+        } else if (cohort_level == "HOME") {
+          cohort_datasets <- lapply(sex_datasets, function(d) droplevels(subset(d, cohort == "HOME")))
+          cohort_formula  <- ""
+        } else if (cohort_level == "MIREC") {
+          cohort_datasets <- lapply(sex_datasets, function(d) droplevels(subset(d, cohort == "MIREC")))
+          cohort_formula  <- "+ center"
+        } else {
+          stop("Invalid cohort level")
+        }
+      } else {
+        cohort_datasets <- sex_datasets
+        cohort_formula  <- ""
+      }
+      
+      if (any(sapply(cohort_datasets, nrow) == 0)) {
+        warning(paste("No data for sex =", sex_level, "and cohort =", cohort_level, "- skipping"))
+        next
+      }
+      
+      for (dep_var in dependent_vars) {
+        for (ind_var in independent_vars) {
+          
+          # Remove stratification variables from covariates when applicable
+          adjusted_covariates <- covariates
+          if (sex_level != "all") adjusted_covariates <- setdiff(adjusted_covariates, "sex")
+          if (cohort_level != "all") adjusted_covariates <- setdiff(adjusted_covariates, c("cohort", "center"))
+          
+          formula_str <- paste0(dep_var, " ~ ", ind_var, " + ",
+                                paste(adjusted_covariates, collapse = " + "),
+                                sex_formula, cohort_formula)
+          formula <- as.formula(formula_str)
+          
+          # Check for zero variance in variables used in this specific model
+          model_vars <- c(dep_var, ind_var, covariates)
+          model_vars <- intersect(model_vars, colnames(cohort_datasets[[1]]))
+          
+          has_issue <- FALSE
+          for (d in cohort_datasets) {
+            issue_vars <- names(which(sapply(d[model_vars], function(x) {
+              is.numeric(x) && var(x, na.rm = TRUE) == 0
+            })))
+            if (length(issue_vars) > 0) {
+              warning(paste0("Zero variance in ", paste(issue_vars, collapse = ", "),
+                             " for dep=", dep_var, ", ind=", ind_var,
+                             " | sex=", sex_level, " | cohort=", cohort_level, " - skipping"))
+              has_issue <- TRUE
+              break
+            }
+          }
+          if (has_issue) next
+          
+          fits <- lapply(cohort_datasets, function(d) {
+            tryCatch(lm(formula, data = d), error = function(e) {
+              warning(paste0("lm() failed: ", deparse(formula),
+                             " | sex = ", sex_level, " | cohort = ", cohort_level,
+                             " | Error: ", e$message))
+              NULL
+            })
+          })
+          
+          if (any(sapply(fits, is.null))) next
+          
+          if (!all(sapply(fits, function(f) ind_var %in% names(coef(f))))) {
+            warning(paste0("Coefficient for ", ind_var, " not found in all models. ",
+                           "sex=", sex_level, " cohort=", cohort_level))
+            next
+          }
+          
+          pooled <- pool_rubin(fits, ind_var)
+          
+          dependent_list[[length(dependent_list) + 1]]      <- dep_var
+          independent_list[[length(independent_list) + 1]]  <- ind_var
+          sex_level_list[[length(sex_level_list) + 1]]       <- sex_level
+          cohort_level_list[[length(cohort_level_list) + 1]] <- cohort_level
+          coef_list[[length(coef_list) + 1]]                 <- sprintf("%.2f", pooled$beta)
+          p_value_list[[length(p_value_list) + 1]]           <- pooled$p
+          ci_list[[length(ci_list) + 1]]                     <- sprintf("(%.2f, %.2f)", pooled$ci_low, pooled$ci_high)
+        }
+      }
+    }
+  }
+  
+  results <- data.frame(
+    dependent_variable   = unlist(dependent_list),
+    independent_variable = unlist(independent_list),
+    sex_level            = unlist(sex_level_list),
+    cohort_level         = unlist(cohort_level_list),
+    coefficient          = unlist(coef_list),
+    p_value              = unlist(p_value_list),
+    ci_95                = unlist(ci_list),
+    stringsAsFactors     = FALSE
+  )
+  
+  results$p_value_fdr <- p.adjust(results$p_value, method = "fdr")
+  
+  return(results)
+}
+```
+

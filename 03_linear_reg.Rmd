@@ -1,0 +1,109 @@
+---
+title: "03_linear_reg"
+author: "Jagadeesh Puvvula"
+date: "2026-03-23"
+output: pdf_document
+---
+
+#load multiple imputed data
+```{r}
+load("E:/BBK17/pj/basc_7y/data/basc_7y_mi_df.rda")
+
+#load this dataset to get names
+x<- complete(mi_dat, 1)
+```
+
+#run linear regression
+```{r}
+lm_res<- lm_exp_mixtures(
+  dependent_vars = names(x)[41:44],
+  independent_vars = names(x)[2:30],
+  covariates = names(x)[31:38],
+  include_sex = TRUE,
+  include_cohort = TRUE,
+  log2_vars = names(x)[2:31],
+  data = mi_dat
+  )
+
+write_csv(lm_res, "E:/BBK17/pj/basc_7y/results/lm_mi_res.csv")
+```
+
+#data prep for visualization
+```{r}
+dat_lm_res <- read_csv("E:/BBK17/pj/basc_7y/results/lm_mi_res.csv") |>
+  rename(chemical = "independent_variable", outcome = "dependent_variable") |>
+  mutate(
+    p_sig = if_else(p_value < 0.05, "sig", "non_sig"),
+    chemical = gsub("log_", "", chemical),
+    cohort_level = fct_recode(cohort_level, "Pooled" = "all"),
+    sex_level = fct_recode(sex_level, "All" = "all"),
+    outcome = fct_recode(outcome, 
+                         "BASC_BSI" = "basc_bsi",
+                         "BASC_EXT" = "basc_ext",
+                         "BASC_INT" = "basc_int",
+                         "BASC_ADT" = "basc_adt"),
+    chemical = fct_recode(chemical,
+      "Pb" = "pb", "Hg" = "hg", "DMA" = "dma", "DDE" = "dde",
+      "PBDE_47" = "pbde47", "PCB_118" = "pcb118", "PCB_138" = "pcb138", "PCB_153" = "pcb153", "PCB_180" = "pcb180",
+      "PFHxS" = "pfhxs", "PFOA" = "pfoa", "PFOS" = "pfos",
+      "BCEP" = "bcep", "BDCIPP" = "bdcipp", "DNBP" = "dnbp", "DPhP" = "dphp",
+      "TCS" = "triclosan", "BPA" = "bisphenol_a",
+      "MBP" = "mbp", "MBZP" = "mbzp", "MCPP" = "mcpp",
+      "sigma_DEHP" = "sigma_dehp", "MEP" = "mep", "MIBP" = "mibp",
+      "di_Ethyl_OP" = "di_ethyl_op", "di_Methyl_OP" = "di_methyl_op",
+      "B_PB" = "b_pb", "M_PB" = "m_pb", "P_PB" = "p_pb"
+    ),
+    chemical = fct_relevel(chemical,
+      "Pb", "Hg", "DMA", "DDE", "PBDE_47", "PCB_118", "PCB_138", "PCB_153", "PCB_180",
+      "PFHxS", "PFOA", "PFOS", "BCEP", "BDCIPP", "DNBP", "DPhP", "TCS", "BPA", "MBP",
+      "MBZP", "MCPP", "sigma_DEHP", "MEP", "MIBP", "di_Ethyl_OP", "di_Methyl_OP",
+      "B_PB", "M_PB", "P_PB"
+    )
+  )
+```
+
+#pooled vis
+```{r}
+dat_lm_res_pool <- dat_lm_res |>
+  filter(cohort_level == "Pooled")
+```
+
+#
+```{r}
+ggplot(dat_lm_res_pool, aes(x = as.factor(sex_level), y = chemical, fill = as.numeric(coefficient)))+
+  geom_tile()+
+  geom_text(aes(label = sprintf("%.2f", as.numeric(coefficient)),
+                fontface = ifelse(p_sig == "sig", "bold", "plain")),
+            color = "black", size = 4, show.legend = FALSE) +
+  labs(x = "", y = "", fill = "coefficient")+
+  facet_grid(.~outcome, scales = "free_y", space = "free_y", switch = "both")+
+  theme_bw()+
+  theme(axis.text=element_text(size=10), 
+        axis.title=element_text(size=10,face="bold"),
+        strip.text = element_text(size=10),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.major.y = element_blank(),
+        axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1, size = 10),
+        axis.text.y = element_text(size = 10), 
+        panel.spacing.x=unit(0.02, "lines"),
+        panel.spacing.y=unit(0.02, "lines"),
+        strip.text.y = element_blank())+
+  guides(fill=FALSE)+
+  scale_fill_gradient2(low = "red", mid = "gray95", high = "royalblue", 
+                       midpoint = 0, name = "Weight",
+                       guide = guide_colorbar(title.position = "top",
+                                              title.hjust = 0.5))
+
+ggsave("E:/BBK17/pj/basc_7y/results/lm_mi_coef_pool.tiff", 
+       width = 14,height = 11,
+       dpi=300)
+
+```
+
+
+
+
+
+
+

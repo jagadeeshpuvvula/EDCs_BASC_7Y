@@ -12,6 +12,33 @@ output: pdf_document
 merged_df<- read_csv("E:/BBK17/pj/basc_7y/data/basc_7y_df.csv") |>
   filter(!if_any(41:44, is.na)) |>
   filter(!if_any(2:30, is.na)) |>
-  mutate(across(where(is.character), as.factor))
+  mutate(across(where(is.character), as.factor)) |>
+  clean_names() |>
+  mutate(across(2:31, ~ ifelse(. == 0, 1e-8, .))) |>
+  rename(
+    di_ethyl_op = di_ethyl_organophosphate, di_methyl_op = di_methyl_organophosphate,
+    b_pb = butyl_paraben, m_pb = methyl_paraben, p_pb = propyl_paraben
+  )
+```
+
+#multiple imputation of home score (37) and maternal depression (38) - 50 datasets
+```{r}
+library(mice)
+
+init <- mice(merged_df, maxit = 0, printFlag = FALSE)
+method <- init$method  # Inherits defaults: pmm for numeric, logreg for binary, etc.
+
+# Target only columns 37 and 38 (adjust methods as needed: 'pmm' for numeric, 'logreg' for binary)
+method[-c(37, 38)] <- ""  
+method[37] <- "pmm"       
+method[38] <- "pmm"       
+
+# Now run imputation
+mi_dat <- mice(data = merged_df,
+               m = 25,
+               seed = 2026,
+               method = method)
+
+save(mi_dat, file="E:/BBK17/pj/basc_7y/data/basc_7y_mi_df.rda")
 ```
 
