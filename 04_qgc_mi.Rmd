@@ -5,3 +5,11 @@ date: "2026-03-23"
 output: pdf_document
 ---
 
+#load multiple imputed data
+```{r}
+load("E:/BBK17/pj/basc_7y/data/basc_7y_mi_df.rda")
+
+#load this dataset to get names
+x<- complete(mi_dat, 1)
+```
+

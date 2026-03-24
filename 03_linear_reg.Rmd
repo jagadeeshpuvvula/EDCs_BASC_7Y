@@ -68,7 +68,6 @@ dat_lm_res_pool <- dat_lm_res |>
   filter(cohort_level == "Pooled")
 ```
 
-#
 ```{r}
 ggplot(dat_lm_res_pool, aes(x = as.factor(sex_level), y = chemical, fill = as.numeric(coefficient)))+
   geom_tile()+
@@ -76,19 +75,21 @@ ggplot(dat_lm_res_pool, aes(x = as.factor(sex_level), y = chemical, fill = as.nu
                 fontface = ifelse(p_sig == "sig", "bold", "plain")),
             color = "black", size = 4, show.legend = FALSE) +
   labs(x = "", y = "", fill = "coefficient")+
-  facet_grid(.~outcome, scales = "free_y", space = "free_y", switch = "both")+
+  facet_nested(.~outcome+cohort_level, scales = "free_y", space = "free_y", switch = "both")+
   theme_bw()+
-  theme(axis.text=element_text(size=10), 
-        axis.title=element_text(size=10,face="bold"),
-        strip.text = element_text(size=10),
-        panel.grid.minor = element_blank(),
-        panel.grid.major = element_blank(),
-        panel.grid.major.y = element_blank(),
-        axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1, size = 10),
-        axis.text.y = element_text(size = 10), 
-        panel.spacing.x=unit(0.02, "lines"),
-        panel.spacing.y=unit(0.02, "lines"),
-        strip.text.y = element_blank())+
+  theme(
+  axis.text = element_text(size = 10), 
+  axis.title = element_text(size = 10, face = "bold"),
+  strip.text = element_text(size = 10, face = "bold"), 
+  strip.background = element_rect(fill = "white", color = "black"),
+  panel.grid.minor = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.major.y = element_blank(),
+  axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1, size = 10, color = "black"),
+  axis.text.y = element_text(size = 10, color = "black"), 
+  panel.spacing.x = unit(0.02, "lines"),
+  panel.spacing.y = unit(0.02, "lines"),
+  strip.text.y = element_blank() )+
   guides(fill=FALSE)+
   scale_fill_gradient2(low = "red", mid = "gray95", high = "royalblue", 
                        midpoint = 0, name = "Weight",
@@ -96,10 +97,10 @@ ggplot(dat_lm_res_pool, aes(x = as.factor(sex_level), y = chemical, fill = as.nu
                                               title.hjust = 0.5))
 
 ggsave("E:/BBK17/pj/basc_7y/results/lm_mi_coef_pool.tiff", 
-       width = 14,height = 11,
+       width = 16,height = 9,
        dpi=300)
-
 ```
+
 
 
 
