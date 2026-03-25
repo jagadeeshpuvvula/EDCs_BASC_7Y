@@ -13,3 +13,185 @@ load("E:/BBK17/pj/basc_7y/data/basc_7y_mi_df.rda")
 x<- complete(mi_dat, 1)
 ```
 
+#run qgc multiple imputed data
+```{r}
+process_imputed_datasets(
+    mi_data            = mi_dat,
+    n_imputations      = 25,
+    output_base_folder = "E:/BBK17/pj/basc_7y/results/qgc_mi_results",
+    outcomes           = names(x)[41:44],
+    chemicals          = names(x)[2:30],
+    covariates         = names(x)[31:38],
+    log2_vars          = "cotinine",
+    include_sex        = TRUE,
+    include_cohort     = TRUE,
+    q    = 4,
+    b    = 400,
+    seed = 2026
+)
+```
+
+#pool estimates using rubins rule
+```{r}
+pooled_results <- pool_imputed_results(
+  base_path     = "E:/BBK17/pj/basc_7y/results/qgc_mi_results",
+  n_imputations = 25,
+  dfcom         = c(all = 654, Female = 313, Male = 303),  # <-- update these
+  model_types   = c("nb", "boot")
+)
+
+write.csv(pooled_results, "E:/BBK17/pj/basc_7y/results/pooled_qgcomp_results.csv", row.names = FALSE)
+```
+
+#visualize qgc MI results
+```{r}
+qgc_mi_res<- read_csv("E:/BBK17/pj/basc_7y/results/pooled_qgcomp_results.csv") |>
+  select(c(1:5,7))|>
+  mutate(
+    sex = str_to_title(sex),
+    model = str_to_title(model),
+    cohort = recode(cohort, "all" = "Pooled"),
+    outcome = str_to_upper(outcome)
+  ) |>separate(
+    CI_95,
+    into = c("ll", "ul"),
+    sep = ",\\s*",
+    convert = TRUE,
+    extra = "drop"
+  ) %>%
+  mutate(
+    ll = str_remove_all(ll, "[()]"),
+    ul = str_remove_all(ul, "[()]")
+  ) %>%
+  mutate(
+    across(c(ll, ul), as.numeric)
+  ) |>
+  filter(ul<100) |>
+  mutate(ci_null = (ll <=0 & ul >=0))
+```
+
+#visualize
+```{r}
+cbbPalette <- c("black", "#0072B2")
+ggplot(qgc_mi_res ,aes(x = as.factor(outcome), y = estimate, ymin = ll, ymax = ul)) + 
+  geom_pointrange(aes(col = as.factor(ci_null), shape=model), 
+                  position=position_dodge(width=0.5),size = 0.6) +
+  geom_hline(aes(yintercept = 0), linetype="dashed") + 
+  scale_colour_manual(values=cbbPalette) +
+  labs(x=NULL,
+       y=expression(paste(beta[Q-gcomp]," [95% CI]")),
+       title = "",
+       caption = "")+
+  theme_bw()+
+  theme(axis.line = element_line(colour = "black"))+
+  theme(plot.caption = element_text(size = 6),
+        plot.title=element_text(size = 10, hjust = 0),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"),
+        text=element_text(size=10),
+        axis.text = element_text(size = 10),
+        axis.text.x=element_text(size=10,angle=0),
+        axis.ticks.x=element_blank(),
+        strip.text.x=element_text(size=10,angle=0),
+        strip.text.y = element_text(size=10),
+        strip.placement = "outside",
+        strip.background = element_rect(fill=NULL, colour = NULL),
+        legend.box.just = "center",
+        legend.spacing = unit(0, "cm"),
+        legend.position = "bottom",
+        legend.box = "horizontal",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 8),
+        legend.key = element_blank(),
+        legend.key.height = unit(3, "mm"))+
+  guides(col="none",
+         shape=guide_legend(title = "Bootstrap"))+
+  facet_grid(sex~outcome*cohort, scales = "free", switch = "x", space = "free_x")
+
+ggsave("E:/BBK17/pj/basc_7y/results/qgcomp_mi_pooled.tiff", 
+       width = 12,height = 6,
+       dpi=300)
+```
+
+#extract weights from QGC MI
+```{r}
+all_weights <- extract_all_iterations("E:/BBK17/pj/basc_7y/results/qgc_mi_results")
+
+write_csv(all_weights, "E:/BBK17/pj/basc_7y/results/qgc_mi_weight.csv")
+```
+
+#visualize weights
+```{r}
+qgc_wt_viz<- read_csv("E:/BBK17/pj/basc_7y/results/qgc_mi_weight.csv") |>
+  separate(
+    col  = file_name,
+    into = c("prefix", "sex", "cohort", "outcome"),
+    sep  = "_",
+    extra = "merge",
+    remove = FALSE
+  ) %>%
+  select(-prefix) %>%
+  mutate(
+    outcome = str_to_upper(outcome),
+    sex = str_to_title(sex),
+    cohort = recode(cohort, "all" = "Pooled")
+  )|>
+  mutate(
+    chemical = fct_recode(chemical,
+      "Pb" = "pb", "Hg" = "hg", "DMA" = "dma", "DDE" = "dde",
+      "PBDE_47" = "pbde47", "PCB_118" = "pcb118", "PCB_138" = "pcb138", "PCB_153" = "pcb153", "PCB_180" = "pcb180",
+      "PFHxS" = "pfhxs", "PFOA" = "pfoa", "PFOS" = "pfos",
+      "BCEP" = "bcep", "BDCIPP" = "bdcipp", "DNBP" = "dnbp", "DPhP" = "dphp",
+      "TCS" = "triclosan", "BPA" = "bisphenol_a",
+      "MBP" = "mbp", "MBZP" = "mbzp", "MCPP" = "mcpp",
+      "sigma_DEHP" = "sigma_dehp", "MEP" = "mep", "MIBP" = "mibp",
+      "di_Ethyl_OP" = "di_ethyl_op", "di_Methyl_OP" = "di_methyl_op",
+      "B_PB" = "b_pb", "M_PB" = "m_pb", "P_PB" = "p_pb"
+    ),
+    chemical = fct_relevel(chemical,
+      "Pb", "Hg", "DMA", "DDE", "PBDE_47", "PCB_118", "PCB_138", "PCB_153", "PCB_180",
+      "PFHxS", "PFOA", "PFOS", "BCEP", "BDCIPP", "DNBP", "DPhP", "TCS", "BPA", "MBP",
+      "MBZP", "MCPP", "sigma_DEHP", "MEP", "MIBP", "di_Ethyl_OP", "di_Methyl_OP",
+      "B_PB", "M_PB", "P_PB"
+    )
+  )
+```
+
+
+#visualize qgc weights
+```{r}
+test_viz<- qgc_wt_viz |>
+  filter(cohort == "Pooled", 
+         !chemical %in% c("neg.psi", "pos.psi", "psi1")) |>
+  mutate(weight = ifelse(direction == "neg", weight * -1, weight))
+
+ggplot(test_viz, aes(x = weight, y = chemical,
+                     color = ifelse(weight < 0, "neg", "pos"))) +
+    geom_vline(xintercept = 0, color = "black", linewidth = 0.8, linetype = "dashed") +
+    geom_jitter(width = 0, height = 0.2, alpha = 0.2, size = 1) +
+    scale_color_manual(
+        values = c("neg" = "darkred", "pos" = "royalblue"),
+        labels = c("neg" = "Negative", "pos" = "Positive"),
+        name   = "Direction"
+    ) +
+    guides(color = guide_legend(
+        override.aes = list(shape = 15, size = 4, alpha = 1)  # <-- solid squares
+    )) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(size = 8, colour = "black"),
+          axis.text.y = element_text(size = 8, colour = "black"),
+          legend.position = "bottom") +
+    labs(x = "Weight", y = "Chemical", title = "") +
+    facet_nested(.~outcome+sex, scales = "free_y", space = "free_y", switch = "both")
+
+ggsave("E:/BBK17/pj/basc_7y/results/qgcomp_mi_weight.tiff",
+       bg = "white",
+       width = 12,height = 8,
+       dpi=300)
+```
+
+
+
+

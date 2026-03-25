@@ -198,3 +198,351 @@ lm_exp_mixtures <- function(dependent_vars, independent_vars, covariates, data,
 }
 ```
 
+#qgc_multiple_miputations
+```{r}
+apply_log2 <- function(data, log2_vars) {
+
+  if (is.null(log2_vars) || length(log2_vars) == 0) return(data)
+
+  # Check all requested vars exist in data
+  missing_vars <- setdiff(log2_vars, names(data))
+  if (length(missing_vars) > 0) {
+    stop(sprintf(
+      "log2_vars not found in data: %s",
+      paste(missing_vars, collapse = ", ")
+    ))
+  }
+
+  # Check for non-positive values which would produce NaN/Inf
+  non_positive <- vapply(log2_vars, function(v) any(data[[v]] <= 0, na.rm = TRUE), logical(1))
+  if (any(non_positive)) {
+    stop(sprintf(
+      "log2 transformation requires strictly positive values. Non-positive values detected in: %s",
+      paste(log2_vars[non_positive], collapse = ", ")
+    ))
+  }
+
+  data[log2_vars] <- lapply(data[log2_vars], log2)
+  data
+}
+
+
+# --- Process all imputed datasets ---
+process_imputed_datasets <- function(mi_data,
+                                     n_imputations  = 15,
+                                     output_base_folder,
+                                     outcomes,
+                                     chemicals,
+                                     covariates,
+                                     log2_vars      = NULL,   # <-- new: NULL means no transformation
+                                     include_sex    = TRUE,
+                                     include_cohort = TRUE,
+                                     q, b, seed) {
+
+  # Validate inputs
+  stopifnot(inherits(mi_data, "mids"))
+  if (n_imputations > mi_data$m) {
+    stop(sprintf(
+      "n_imputations (%d) exceeds available imputations in mi_data (%d).",
+      n_imputations, mi_data$m
+    ))
+  }
+
+  # Warn if log2_vars contains names not in chemicals or covariates
+  # (outcomes on log2 scale would be unusual — flag it)
+  if (!is.null(log2_vars)) {
+    unexpected <- setdiff(log2_vars, c(chemicals, covariates))
+    if (length(unexpected) > 0) {
+      warning(sprintf(
+        "log2_vars contains variables not listed in chemicals or covariates: %s",
+        paste(unexpected, collapse = ", ")
+      ))
+    }
+    message(sprintf("log2 transformation will be applied to: %s",
+                    paste(log2_vars, collapse = ", ")))
+  }
+
+  # Create main output folder
+  if (!dir.exists(output_base_folder)) {
+    dir.create(output_base_folder, recursive = TRUE)
+  }
+
+  # Track per-iteration status
+  status <- character(n_imputations)
+
+  for (i in seq_len(n_imputations)) {
+
+    iter_folder <- file.path(output_base_folder, paste0("iter_", i))
+    if (!dir.exists(iter_folder)) dir.create(iter_folder)
+
+    message(sprintf("Processing imputation %d of %d ...", i, n_imputations))
+
+    tryCatch({
+      dat_mi_i <- mice::complete(mi_data, i)
+
+      # Apply log2 transformation before passing to qgcomp_func
+      dat_mi_i <- apply_log2(dat_mi_i, log2_vars)
+
+      qgcomp_func(
+        outcomes       = outcomes,
+        data           = dat_mi_i,
+        output_folder  = iter_folder,
+        chemicals      = chemicals,
+        covariates     = covariates,
+        include_sex    = include_sex,
+        include_cohort = include_cohort,
+        q              = q,
+        b              = b,
+        seed           = seed
+      )
+
+      status[i] <- "ok"
+      message(sprintf("  -> Imputation %d complete.", i))
+
+    }, error = function(e) {
+      status[i] <<- "error"
+      message(sprintf("  -> ERROR on imputation %d: %s", i, e$message))
+    })
+  }
+
+  # Summary report
+  n_ok  <- sum(status == "ok")
+  n_err <- sum(status == "error")
+  message(sprintf("\nDone. %d/%d succeeded, %d failed.", n_ok, n_imputations, n_err))
+
+  if (n_err > 0) {
+    message("Failed iterations: ", paste(which(status == "error"), collapse = ", "))
+  }
+
+  invisible(setNames(status, paste0("iter_", seq_len(n_imputations))))
+}
+```
+
+#extract qgc pooled results
+```{r}
+pool_imputed_results <- function(base_path,
+                                 n_imputations = 25,
+                                 dfcom,
+                                 model_types = c("nb", "boot")) {
+
+  # --- validate inputs ---
+  required_names <- c("all", "Female", "Male")
+  if (!all(required_names %in% names(dfcom)))
+    stop(sprintf("dfcom must be a named vector with names: %s",
+                 paste(required_names, collapse = ", ")))
+
+  # --- sort iter folders numerically ---
+  iter_folders <- list.dirs(base_path, recursive = FALSE)
+  iter_folders <- iter_folders[grepl("iter_\\d+$", iter_folders)]
+  iter_folders <- iter_folders[order(as.integer(sub(".*iter_", "", iter_folders)))]
+
+  if (length(iter_folders) != n_imputations)
+    warning(sprintf("Expected %d iter folders, found %d.", n_imputations, length(iter_folders)))
+
+  # --- get target files from iter_1 ---
+  all_files    <- list.files(iter_folders[1], pattern = "\\.rda$")
+  model_pat    <- paste0("^(", paste(model_types, collapse = "|"), ")_")
+  target_files <- all_files[grepl(model_pat, all_files)]
+
+  message(sprintf("Found %d files to pool per iteration.", length(target_files)))
+
+  # --- helper: load object from rda ---
+  load_obj <- function(path) {
+    e <- new.env()
+    load(path, envir = e)
+    objs <- ls(e)
+    if (length(objs) == 1) return(get(objs[1], envir = e))
+    for (obj_name in objs) {
+      obj <- get(obj_name, envir = e)
+      if (inherits(obj, c("qgcompfit", "qgcomp", "lm", "glm"))) return(obj)
+    }
+    stop("No recognised model object found in: ", path)
+  }
+
+  # --- helper: extract psi1 estimate and variance ---
+  extract_psi1 <- function(fit) {
+    if (!is.null(fit$psi) && !is.null(fit$var.psi)) {
+      return(list(estimate = fit$psi[[1]], variance = fit$var.psi[[1]]))
+    }
+    if ("psi1" %in% names(coef(fit))) {
+      return(list(estimate = coef(fit)[["psi1"]], variance = vcov(fit)["psi1", "psi1"]))
+    }
+    stop("Cannot extract psi1 from model object.")
+  }
+
+  # --- manual Rubin's rules with edge case handling ---
+  rubins_rules <- function(estimates, variances, m, dfcom) {
+
+    Q_bar <- mean(estimates)
+    U_bar <- mean(variances)
+    B     <- var(estimates)       # between-imputation variance
+    T_var <- U_bar + (1 + 1/m) * B
+
+    # guard: T_var must be positive
+    if (is.na(T_var) || T_var <= 0) {
+      warning("Total variance is non-positive — check model outputs for this stratum.")
+      return(list(estimate  = Q_bar, std.error = NA, conf.low  = NA,
+                  conf.high = NA,    t_stat    = NA, df        = NA,
+                  p.value   = NA,    lambda    = NA))
+    }
+
+    SE     <- sqrt(T_var)
+    lambda <- (1 + 1/m) * B / T_var  # fraction of missing information
+
+    # degrees of freedom (Barnard & Rubin 1999)
+    # when lambda is effectively 0 (B ≈ 0), all info is within-imputation
+    # df_old → Inf, so df collapses to df_obs
+    df_obs <- (dfcom + 1) / (dfcom + 3) * dfcom * (1 - lambda)
+
+    df <- if (lambda < .Machine$double.eps || is.na(lambda)) {
+      # no between-imputation variance: use observed df directly
+      df_obs
+    } else {
+      df_old <- (m - 1) / lambda^2
+      (df_old * df_obs) / (df_old + df_obs)
+    }
+
+    # final guard: df must be a finite positive number
+    if (is.na(df) || !is.finite(df) || df <= 0) {
+      warning(sprintf("Computed df is invalid (%.4f) — falling back to df = dfcom.", df))
+      df <- dfcom
+    }
+
+    t_stat <- Q_bar / SE
+    p_val  <- 2 * pt(abs(t_stat), df = df, lower.tail = FALSE)
+
+    list(
+      estimate  = Q_bar,
+      std.error = SE,
+      conf.low  = Q_bar - qt(0.975, df) * SE,
+      conf.high = Q_bar + qt(0.975, df) * SE,
+      t_stat    = t_stat,
+      df        = df,
+      p.value   = p_val,
+      lambda    = lambda
+    )
+  }
+
+  # --- process each file ---
+  results <- purrr::map_dfr(target_files, function(file_name) {
+
+    stem    <- tools::file_path_sans_ext(file_name)
+    parts   <- strsplit(stem, "_")[[1]]
+    model   <- parts[1]
+    sex     <- parts[2]
+    cohort  <- parts[3]
+    outcome <- paste(parts[4:length(parts)], collapse = "_")
+
+    dfcom_val <- dfcom[sex]
+
+    message(sprintf("Pooling: %s | sex = %-6s | cohort = %-5s | outcome = %s",
+                    model, sex, cohort, outcome))
+
+    extracted <- purrr::map(iter_folders, function(iter_dir) {
+      fp <- file.path(iter_dir, file_name)
+      if (!file.exists(fp)) stop("Missing file: ", fp)
+      fit <- load_obj(fp)
+      extract_psi1(fit)
+    })
+
+    estimates <- sapply(extracted, `[[`, "estimate")
+    variances <- sapply(extracted, `[[`, "variance")
+
+    # diagnostic: warn if any estimates/variances look wrong
+    if (any(is.na(estimates))) warning(sprintf("NA estimates in: %s", file_name))
+    if (any(is.na(variances))) warning(sprintf("NA variances in: %s", file_name))
+    if (any(variances <= 0, na.rm = TRUE)) warning(sprintf("Non-positive variances in: %s", file_name))
+
+    pooled <- rubins_rules(estimates, variances, m = n_imputations, dfcom = dfcom_val)
+
+    data.frame(
+      model     = model,
+      sex       = sex,
+      cohort    = cohort,
+      outcome   = outcome,
+      estimate  = round(pooled$estimate,  3),
+      std.error = round(pooled$std.error, 3),
+      CI_95     = if (!is.na(pooled$conf.low))
+                    sprintf("(%.2f, %.2f)", pooled$conf.low, pooled$conf.high)
+                  else NA_character_,
+      t_stat    = round(pooled$t_stat, 3),
+      df        = round(pooled$df,     1),
+      p.value   = round(pooled$p.value, 3),
+      lambda    = round(pooled$lambda,  3),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  results
+}
+```
+
+#extract weight from each iteration
+```{r}
+extract_weights <- function(folder_location) {
+  nb_files <- list.files(path = folder_location,
+                         pattern = "^nb.*\\.rda$",
+                         full.names = TRUE)
+
+  results_list <- list()
+
+  for (file in nb_files) {
+    load(file)  # loads object `nb` in your workspace
+
+    neg <- as.data.frame(nb$neg.weights) |>
+      rename(weight = `nb$neg.weights`) |>
+      rownames_to_column("chemical") |>
+      mutate(direction = "neg")
+
+    pos <- as.data.frame(nb$pos.weights) |>
+      rename(weight = `nb$pos.weights`) |>
+      rownames_to_column("chemical") |>
+      mutate(direction = "pos")
+
+    weights_df <- bind_rows(neg, pos)
+
+    file_name <- sub(".*/(.*)\\.rda", "\\1", file)
+    weights_df$file_name <- file_name
+
+    if (is.list(nb$psi)) {
+      psi1 <- nb$psi$psi1
+    } else {
+      psi1 <- nb$psi
+    }
+
+    psi_df <- data.frame(
+      chemical = c("neg.psi", "pos.psi", "psi1"),
+      weight   = c(nb$neg.psi, nb$pos.psi, psi1),
+      direction = c("neg_psi", "pos_psi", "psi1"),
+      file_name = file_name
+    )
+
+    combined_df <- bind_rows(weights_df, psi_df)
+    results_list[[file_name]] <- combined_df
+  }
+
+  results_df <- bind_rows(results_list)
+  return(results_df)
+}
+
+# NEW: apply to all iteration subfolders and add iteration name
+extract_all_iterations <- function(parent_folder) {
+  # list immediate subfolders = iterations
+  iter_dirs <- list.dirs(parent_folder, full.names = TRUE, recursive = FALSE)
+
+  # for each subfolder, run extract_weights and tag iteration
+  iter_results <- lapply(iter_dirs, function(iter_path) {
+    iter_name <- basename(iter_path)
+    df <- extract_weights(iter_path)
+    df$iteration <- iter_name
+    df
+  })
+
+  bind_rows(iter_results)
+}
+```
+
+
+
+
+
